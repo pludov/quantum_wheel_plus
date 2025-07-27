@@ -56,6 +56,16 @@ class QFW : public INDI::FilterWheel
         int QueryFilter();
         bool SelectFilter(int);
     private:
+        //  A number vector for statistics
+        INumberVectorProperty FilterSwitchDurationNP;
+        INumber FilterSwitchDurationN[1];
+
+        //  A number vector for precision statistics
+        INumberVectorProperty FilterSwitchPrecisionNP;
+        INumber FilterSwitchPrecisionN[1];
+
+
         void dump(char *buf, const char *data);
         int send_command(int fd, const char *cmd, char *resp);
+        void UpdateFilterStatistics(float precision, int64_t duration);
 };

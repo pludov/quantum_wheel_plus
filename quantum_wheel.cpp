@@ -22,15 +22,18 @@
 
 #include <memory>
 #include <cstring>
+#include <chrono>
 #include <termios.h>
 #include <unistd.h>
 
 #include "indicom.h"
 
 #define VERSION_MAJOR 0
-#define VERSION_MINOR 3
+#define VERSION_MINOR 4
 
 #define QUANTUM_TIMEOUT 5
+
+#define PRECISION_WORST 100.0f
 
 std::unique_ptr<QFW> qfw(new QFW());
 
@@ -92,6 +95,20 @@ bool QFW::initProperties()
     FilterSlotN[0].max = 7;
     CurrentFilter      = 1;
 
+
+    IUFillNumber(&FilterSwitchDurationN[0], "FILTER_SWITCH_DURATION", "Switch duration", "%3.0f", 0.0, 60.0, 1.0, 0.0);
+    IUFillNumberVector(&FilterSwitchDurationNP, FilterSwitchDurationN, 1, m_defaultDevice->getDeviceName(), "DURATION", "Switch duration", "STATISTICS",
+                       IP_RO, 60,
+                       IPS_IDLE);
+    m_defaultDevice->defineProperty(&FilterSwitchDurationNP);
+
+    //  A number vector for precision statistics
+    IUFillNumber(&FilterSwitchPrecisionN[0], "FILTER_SWITCH_PRECISION", "Switch precision", "%3.2f", 0.0, PRECISION_WORST, 1.0, PRECISION_WORST);
+    IUFillNumberVector(&FilterSwitchPrecisionNP, FilterSwitchPrecisionN, 1, m_defaultDevice->getDeviceName(), "PRECISION", "Switch precision", "STATISTICS",
+                        IP_RO, 60,
+                        IPS_IDLE);
+    m_defaultDevice->defineProperty(&FilterSwitchPrecisionNP);
+    
     return true;
 }
 
@@ -134,6 +151,19 @@ int QFW::QueryFilter()
     return CurrentFilter;
 }
 
+void QFW::UpdateFilterStatistics(float precision, int64_t duration) {
+    if (precision != FilterSwitchPrecisionN[0].value)
+    {
+        FilterSwitchPrecisionN[0].value = precision;
+        IDSetNumber(&FilterSwitchPrecisionNP, nullptr);
+    }
+    if (duration != FilterSwitchDurationN[0].value)
+    {
+        FilterSwitchDurationN[0].value = duration;
+        IDSetNumber(&FilterSwitchDurationNP, nullptr);
+    }
+}
+
 bool QFW::SelectFilter(int position)
 {
     // count from 0 to 6 for positions 1 to 7
@@ -146,6 +176,7 @@ bool QFW::SelectFilter(int position)
     {
         CurrentFilter = position + 1;
         SelectFilterDone(CurrentFilter);
+        UpdateFilterStatistics(PRECISION_WORST, 100);
         return true;
     }
 
@@ -170,6 +201,7 @@ bool QFW::SelectFilter(int position)
         LOGF_ERROR("Serial write error: %s", errmsg);
         return false;
     }
+    auto start = std::chrono::system_clock::now();
     //res = write(PortFD, targetpos, len);
     dump(dmp, targetpos);
     LOGF_DEBUG("CMD: %s", dmp);
@@ -195,6 +227,25 @@ bool QFW::SelectFilter(int position)
         LOGF_DEBUG("REP: %s", dmp);
     }
     while (strncmp(targetpos, curpos, 2) != 0);
+
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - start).count();
+
+    // Check for extended status report...
+    if (curpos[2] == ':')
+    {
+        if (curpos[3] == 'E') {
+            LOGF_ERROR("Error reported by device: %s", curpos+4);
+            return false;
+        }
+        // Reporting of precision
+        LOGF_DEBUG("Precision reported by device: %s", curpos+4);
+        // Parse as float
+        float precision = atof(curpos+4);
+        UpdateFilterStatistics(precision, duration);
+
+    } else {
+        UpdateFilterStatistics(PRECISION_WORST, duration);
+    }
 
     // return current position to indi
     CurrentFilter = position + 1;

@@ -59,6 +59,48 @@ const char *QFW::getDefaultName()
     return (const char *)"Quantum Wheel";
 }
 
+bool QFW::readSetting(char id, float *value)
+{
+    char cmd[10];
+    char resp[255] = {0};
+    snprintf(cmd, sizeof(cmd), "s%c\r\n", id);
+    if (send_command(PortFD, cmd, resp) < 2)
+        return false;
+
+    if (strncmp(cmd, resp, 2) != 0) {
+        LOGF_ERROR("Unexpected reply for %c: %s", id, resp);
+        return false;
+    }
+
+    char *err = nullptr;
+    float f = strtod(resp + 2, &err);
+    if ((!err) || *err == 0 || *err == '\r' || *err == '\n') {
+        *value = f;
+        return true;
+    }
+    LOGF_ERROR("Failed to parse float for %c from %s", id, resp + 2);
+    return false;
+}
+
+bool QFW::readSettingDescription(char id, char *description, size_t size)
+{
+    char cmd[10];
+    char resp[255] = {0};
+    snprintf(cmd, sizeof(cmd), "s%c?\r\n", id);
+    if (send_command(PortFD, cmd, resp) < 3)
+        return false;
+
+    if (strncmp(cmd, resp, 3) != 0) {
+        LOGF_ERROR("Unexpected reply for %c: %s", id, resp);
+        return false;
+    }
+
+    const char *desc = resp + 3; // Skip "s<id>?"
+    strncpy(description, desc, size - 1);
+    description[size - 1] = '\0'; // Ensure null termination
+    return true;
+}
+
 bool QFW::Handshake()
 {
     if (isSimulation())
@@ -80,7 +122,60 @@ bool QFW::Handshake()
         return false;
 
     // SN should respond SN<number>, this identifies a Quantum wheel
-    return strncmp(cmd, resp, 2) == 0;
+    if (strncmp(cmd, resp, 2) != 0)
+        return false;
+
+    int prevSettingCount = 0;
+    this->settingCount = 0;
+
+    // Search for a "+" sign to indicate a Custom wheel
+    if (strchr(resp, '+') != nullptr)
+    {
+        LOG_INFO("Customized wheel detected");
+
+        if (send_command(PortFD, "s?\r\n", resp) >= 2) {
+            for(const char *p = resp+2; *p && *p != '\r' && *p != '\n' && this->settingCount < QFW_MAX_SETTINGS; p++) {
+                char setting = *p;
+                char setting_id[32];
+                char setting_name[32];
+
+                snprintf(setting_id, sizeof(setting_id), "SETTING_%c", setting);
+
+                // Get the setting value
+                float v;
+                char description[64];
+                if (this->readSetting(setting, &v) && this->readSettingDescription(setting, description, sizeof(description))) {
+                    LOGF_DEBUG("Setting %c: %s = %f", setting, description, v);
+
+                    IUFillNumber(&SettingsN[this->settingCount],
+                                setting_id,
+                                description,
+                                "%3.5f", 0.0, 100.0, 1.0, v);
+                    settingValues[this->settingCount] = v;
+                    this->settingCount++;
+                }
+            }
+
+            IUFillNumberVector(&SettingsNP,
+                            SettingsN,
+                            this->settingCount,
+                            m_defaultDevice->getDeviceName(),
+                            "SETTINGS",
+                            "Settings",
+                            "Settings",
+                            IP_RW, 60,
+                            IPS_IDLE);
+        }
+    }
+
+    // Declare the new settings
+    if (this->settingCount == 0) {
+        this->m_defaultDevice->deleteProperty(SettingsNP.name);
+    } else {
+        this->m_defaultDevice->defineProperty(&SettingsNP);
+    }
+
+    return true;
 }
 
 bool QFW::initProperties()
@@ -188,7 +283,7 @@ bool QFW::SelectFilter(int position)
     int nbytes;
 
     // format target position G[0-6]
-    sprintf(targetpos, "G%d\r\n ", position);
+    sprintf(targetpos, "\r\nG%d\r\n ", position);
 
     // write command
     //int len = strlen(targetpos);
@@ -203,7 +298,7 @@ bool QFW::SelectFilter(int position)
     }
     auto start = std::chrono::system_clock::now();
     //res = write(PortFD, targetpos, len);
-    dump(dmp, targetpos);
+    dump(dmp, targetpos, nbytes);
     LOGF_DEBUG("CMD: %s", dmp);
 
     // format target marker P[0-6]
@@ -223,7 +318,7 @@ bool QFW::SelectFilter(int position)
             return false;
         }
         curpos[nbytes] = 0;
-        dump(dmp, curpos);
+        dump(dmp, curpos, nbytes);
         LOGF_DEBUG("REP: %s", dmp);
     }
     while (strncmp(targetpos, curpos, 2) != 0);
@@ -255,11 +350,81 @@ bool QFW::SelectFilter(int position)
     return true;
 }
 
-void QFW::dump(char *buf, const char *data)
+int QFW::getSettingId(const char *name) const
+{
+    for(int j = 0; j < this->settingCount; j++) {
+        if (strcmp(SettingsN[j].name, name) == 0) {
+            return j;
+        }
+    }
+    return -1;
+}
+
+bool QFW::ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) {
+    if (FilterWheel::ISNewNumber(dev, name, values, names, n))
+        return true;
+
+    if (this->settingCount && dev && !strcmp(dev, m_defaultDevice->getDeviceName()) && !strcmp(name, SettingsNP.name)) {
+        for (int i = 0; i < n; i++) {
+            int settingId = getSettingId(names[i]);
+            if (settingId == -1) {
+                LOGF_WARN("Unknown setting: %s", names[i]);
+                return false;
+            }
+        }
+
+        int todo[32];
+        int todoCount = 0;
+
+        for(int i = 0; i < n; i++) {
+            int settingId = getSettingId(names[i]);
+            if (settingValues[settingId] != values[i]) {
+                todo[todoCount++] = i;
+            } else {
+                LOGF_DEBUG("Setting %s already set to %f", names[i], values[i]);
+            }
+        }
+        LOGF_DEBUG("Settings changed: %d/%d", todoCount, n);
+        // FIXME: sort todo ?
+        bool ok = true;
+        if (todoCount > 0) {
+            SettingsNP.s = IPS_BUSY;
+            IDSetNumber(&SettingsNP, nullptr);
+
+
+            for(int i = 0; i < todoCount; i++) {
+                int idx = todo[i];
+                int settingId = getSettingId(names[idx]);
+                float value = values[idx];
+                LOGF_INFO("Setting %s from %f to %f", names[todo[i]], settingValues[settingId],value);
+                char cmd[32];
+                snprintf(cmd, sizeof(cmd), "\r\ns%c%f\r\n", SettingsN[settingId].name[8], value);
+                char resp[255] = {0};
+                if (send_command(PortFD, cmd, resp) < 2) {
+                    LOGF_ERROR("Failed to set setting %s to %f", SettingsN[settingId].name, values[idx]);
+                    // Restore previous value
+                    SettingsN[settingId].value = settingValues[settingId];
+                    ok = false;
+                } else {
+                    settingValues[settingId] = value;
+                }
+            }
+
+        }
+        SettingsNP.s = ok ? IPS_OK : IPS_ALERT;
+        IDSetNumber(&SettingsNP, nullptr);
+        return true;
+    }
+
+    return false;
+}
+
+
+void QFW::dump(char *buf, const char *data, int data_len)
 {
     int i = 0;
     int n = 0;
-    while(data[i] != 0)
+    while(i < data_len)
     {
         if (isprint(data[i]))
         {
@@ -273,6 +438,7 @@ void QFW::dump(char *buf, const char *data)
         }
         i++;
     }
+    buf[n] = 0;
 }
 
 // Send a command to the mount. Return the number of bytes received or 0 if
@@ -286,7 +452,7 @@ int QFW::send_command(int fd, const char* cmd, char *resp)
     int cmd_len = strlen(cmd);
     char dmp[255];
 
-    dump(dmp, cmd);
+    dump(dmp, cmd, cmd_len);
     LOGF_DEBUG("CMD <%s>", dmp);
 
     tcflush(fd, TCIOFLUSH);
@@ -306,7 +472,7 @@ int QFW::send_command(int fd, const char* cmd, char *resp)
     }
 
     resp[nbytes] = 0;
-    dump(dmp, resp);
+    dump(dmp, resp, nbytes);
     LOGF_DEBUG("RES <%s>", dmp);
     return nbytes;
 }

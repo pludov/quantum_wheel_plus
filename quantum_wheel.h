@@ -23,18 +23,26 @@
  * Get number of filter positions   EN           N<number>
  * Disconnect                       DS
  * Go to filter position            G<number>
- * position is returned when the move finishes  P<number>
+ * position is returned when the move finishes  P<number> or P<number>:E<error> or P<number>:<precision>
  * get filter name                  F<number>   F<number><name>
  * set filter name                  f<number><name>
  * Get filter offset                O<number>   O<number><offset>
  * set filter offset                o<number><offset>
  * Get description                  SN          SN<details>
  * get version                      VR          VR<details>
+ *
+ * Additional commands :
+ * list settings                    s?          s?<id1><id2>...
+ * set setting                      s<id>
+ *                                  s<id><val>  s<id><val>
+ * describe setting                 s<id>?      s<id>?<description>
  */
 
 #pragma once
 
 #include "indifilterwheel.h"
+
+#define QFW_MAX_SETTINGS 5
 
 class QFW : public INDI::FilterWheel
 {
@@ -56,6 +64,7 @@ class QFW : public INDI::FilterWheel
         int QueryFilter();
         bool SelectFilter(int);
     private:
+        int settingCount = 0;
         //  A number vector for statistics
         INumberVectorProperty FilterSwitchDurationNP;
         INumber FilterSwitchDurationN[1];
@@ -64,8 +73,20 @@ class QFW : public INDI::FilterWheel
         INumberVectorProperty FilterSwitchPrecisionNP;
         INumber FilterSwitchPrecisionN[1];
 
+        //  A number vector for precision statistics
+        INumberVectorProperty SettingsNP;
+        INumber SettingsN[QFW_MAX_SETTINGS];
+        float settingValues[QFW_MAX_SETTINGS];
 
-        void dump(char *buf, const char *data);
+        // C'est pas virtuel, on surcharge comment ?
+        virtual bool ISNewNumber(const char *dev, const char *name, double values[], char *names[], int n) override;
+
+
+        void dump(char *buf, const char *data, int data_len);
         int send_command(int fd, const char *cmd, char *resp);
         void UpdateFilterStatistics(float precision, int64_t duration);
+
+        int getSettingId(const char *name) const;
+        bool readSetting(char id, float *value);
+        bool readSettingDescription(char id, char *description, size_t size);
 };

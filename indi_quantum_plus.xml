@@ -2,7 +2,7 @@
 <driversList>
 <devGroup group="Filter Wheels">
         <device label="Quantum Wheel Plus (custom)" manufacturer="Brightstar">
-            <driver name="Quantum Wheel Plus">indi_quantum_wheel_plus</driver>
+            <driver name="Quantum Wheel Plus">indi_quantum_plus</driver>
             <version>0.4</version>
         </device>
 </devGroup>

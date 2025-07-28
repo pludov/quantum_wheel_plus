@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <driversList>
-<devGroup group="Others">
-        <device label="Generic u-controller" manufacturer="none">
-                <driver name="Generic u-controller">indi_allinone</driver>
-                <version>1.0</version>
+<devGroup group="Filter Wheels">
+        <device label="Quantum Wheel Plus (custom)" manufacturer="Brightstar">
+            <driver name="Quantum Wheel Plus">indi_quantum_wheel_plus</driver>
+            <version>0.4</version>
         </device>
 </devGroup>
 </driversList>
+
